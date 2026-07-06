@@ -1,1 +1,48 @@
-name: Build
+name: Build AVPlayer
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+
+    runs-on: windows-latest
+
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install vcpkg
+        uses: lukka/run-vcpkg@v11
+
+      - name: Install Dependencies
+        run: |
+          vcpkg install sdl2:x64-windows
+          vcpkg install ffmpeg:x64-windows
+
+      - name: Configure CMake
+        run: >
+          cmake
+          -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Show Build Folder
+        run: dir build /s
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: AVPlayer
+          path: build
