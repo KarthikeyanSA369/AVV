@@ -25,7 +25,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          vcpkg install 
+          vcpkg install
 
       - name: Configure CMake
         run: >
