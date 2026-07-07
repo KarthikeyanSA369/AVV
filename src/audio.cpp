@@ -222,37 +222,54 @@ int AudioOutput::ResampleFrame(AVFrame* frame) {
 /**
  * @brief Initialize the SwrContext for converting from source to target format.
  */
-bool AudioOutput::InitResampler(int srcRate, int srcChannels, AVSampleFormat srcFmt) {
-    if (swrCtx_) {
+bool AudioOutput::InitResampler(int srcRate, int srcChannels, AVSampleFormat srcFmt)
+{
+    if (swrCtx_)
+    {
         swr_free(&swrCtx_);
+        swrCtx_ = nullptr;
     }
 
-    AVChannelLayout srcLayout = AV_CHANNEL_LAYOUT_STEREO;
-    av_channel_layout_default(&srcLayout, srcChannels);
+    AVChannelLayout srcLayout{};
+    AVChannelLayout dstLayout{};
 
-    AVChannelLayout dstLayout = AV_CHANNEL_LAYOUT_STEREO;
+    // Create layouts without using AV_CHANNEL_LAYOUT_STEREO
+    av_channel_layout_default(&srcLayout, srcChannels);
+    av_channel_layout_default(&dstLayout, kTargetChannels);
 
     int ret = swr_alloc_set_opts2(
         &swrCtx_,
-        &dstLayout, kTargetFormat, kTargetSampleRate,
-        &srcLayout, srcFmt, srcRate,
-        0, nullptr
+        &dstLayout,
+        kTargetFormat,
+        kTargetSampleRate,
+        &srcLayout,
+        srcFmt,
+        srcRate,
+        0,
+        nullptr
     );
 
     av_channel_layout_uninit(&srcLayout);
     av_channel_layout_uninit(&dstLayout);
 
-    if (ret < 0 || !swrCtx_) {
-        std::cerr << "swr_alloc_set_opts2 failed" << std::endl;
+    if (ret < 0 || !swrCtx_)
+    {
+        std::cerr << "Failed to allocate SwrContext" << std::endl;
         swrCtx_ = nullptr;
         return false;
     }
 
     ret = swr_init(swrCtx_);
-    if (ret < 0) {
+
+    if (ret < 0)
+    {
         char errbuf[AV_ERROR_MAX_STRING_SIZE];
         av_strerror(ret, errbuf, sizeof(errbuf));
-        std::cerr << "swr_init failed: " << errbuf << std::endl;
+
+        std::cerr << "swr_init failed: "
+                  << errbuf
+                  << std::endl;
+
         swr_free(&swrCtx_);
         return false;
     }
@@ -263,5 +280,3 @@ bool AudioOutput::InitResampler(int srcRate, int srcChannels, AVSampleFormat src
 
     return true;
 }
-
-} // namespace myplayer
