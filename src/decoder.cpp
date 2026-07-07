@@ -1,283 +1,197 @@
-/**
- * @file decoder.h
- * @brief FFmpeg-based audio/video decoder with frame queuing.
- *
- * Supports: MP4, MKV, AVI, MOV, MP3, WAV, FLAC, AAC, HEVC, H264, AV1.
- */
-
-#pragma once
-
-#include <string>
-#include <memory>
-#include <mutex>
-#include <condition_variable>
-#include <queue>
-#include <atomic>
-#include <thread>
-#include <vector>
-
-extern "C" {
-#include <libavformat/avformat.h>
-#include <libavcodec/avcodec.h>
-#include <libavutil/avutil.h>
-#include <libavutil/imgutils.h>
-#include <libavutil/samplefmt.h>
-#include <libswscale/swscale.h>
-#include <libswresample/swresample.h>
-}
+#include "decoder.h"
+#include <iostream>
 
 namespace myplayer {
 
-/**
- * @brief Maximum number of decoded frames to queue per stream.
- */
-constexpr size_t kMaxFrameQueueSize = 128;
+// ---------------------------
+// FrameQueue<T> definitions
+// ---------------------------
 
-/**
- * @brief Structure holding a decoded video frame with its timing metadata.
- */
-struct VideoFrame {
-    std::unique_ptr<AVFrame, decltype(&av_frame_unref)> frame{nullptr, av_frame_unref};
-    double pts{};               ///< Presentation timestamp in seconds.
-    double duration{};          ///< Frame duration in seconds.
-    int width{};                ///< Frame width in pixels.
-    int height{};               ///< Frame height in pixels.
-    AVPixelFormat format{};     ///< Pixel format of the frame.
-};
-
-/**
- * @brief Structure holding decoded audio samples with timing metadata.
- */
-struct AudioFrame {
-    std::unique_ptr<AVFrame, decltype(&av_frame_unref)> frame{nullptr, av_frame_unref};
-    double pts{};               ///< Presentation timestamp in seconds.
-    int sampleRate{};           ///< Sample rate in Hz.
-    int channels{};             ///< Number of audio channels.
-    AVSampleFormat format{};    ///< Sample format.
-};
-
-/**
- * @brief Thread-safe queue for decoded frames.
- * @tparam T Frame type (VideoFrame or AudioFrame).
- */
 template <typename T>
-class FrameQueue {
-public:
-    /**
-     * @brief Push a frame into the queue. Blocks if queue is full.
-     * @param frame The frame to enqueue.
-     * @return true if successful, false if queue is shutting down.
-     */
-    bool Push(T frame);
+bool FrameQueue<T>::Push(T frame) {
+    std::unique_lock<std::mutex> lk(mutex_);
+    notFull_.wait(lk, [this]() { return queue_.size() < kMaxFrameQueueSize || shutdown_.load(); });
+    if (shutdown_.load()) {
+        return false;
+    }
+    queue_.push(std::move(frame));
+    notEmpty_.notify_one();
+    return true;
+}
 
-    /**
-     * @brief Pop a frame from the queue. Blocks if queue is empty.
-     * @param[out] frame The dequeued frame.
-     * @return true if successful, false if queue is shutting down.
-     */
-    bool Pop(T& frame);
+template <typename T>
+bool FrameQueue<T>::Pop(T& frame) {
+    std::unique_lock<std::mutex> lk(mutex_);
+    notEmpty_.wait(lk, [this]() { return !queue_.empty() || shutdown_.load(); });
+    if (queue_.empty()) {
+        return false;
+    }
+    frame = std::move(queue_.front());
+    queue_.pop();
+    notFull_.notify_one();
+    return true;
+}
 
-    /**
-     * @brief Get current queue size.
-     */
-    size_t Size() const;
+template <typename T>
+size_t FrameQueue<T>::Size() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return queue_.size();
+}
 
-    /**
-     * @brief Clear all frames from the queue.
-     */
-    void Clear();
+template <typename T>
+void FrameQueue<T>::Clear() {
+    std::lock_guard<std::mutex> lk(mutex_);
+    while (!queue_.empty()) {
+        queue_.pop();
+    }
+}
 
-    /**
-     * @brief Signal the queue to shut down, unblocking all waiters.
-     */
-    void Shutdown();
+template <typename T>
+void FrameQueue<T>::Shutdown() {
+    shutdown_.store(true);
+    notEmpty_.notify_all();
+    notFull_.notify_all();
+}
 
-    /**
-     * @brief Check if the queue has been shut down.
-     */
-    bool IsShutdown() const;
+template <typename T>
+bool FrameQueue<T>::IsShutdown() const {
+    return shutdown_.load();
+}
 
-private:
-    mutable std::mutex mutex_;
-    std::condition_variable notFull_;
-    std::condition_variable notEmpty_;
-    std::queue<T> queue_;
-    std::atomic<bool> shutdown_{false};
-};
+// Explicit instantiations for the frame types used in the project.
+template class FrameQueue<VideoFrame>;
+template class FrameQueue<AudioFrame>;
 
-/**
- * @brief Media decoder using FFmpeg. Decodes audio and video streams
- *        into frame queues for consumption by renderer and audio output.
- */
-class Decoder {
-public:
-    /**
-     * @brief Construct a new Decoder.
-     */
-    Decoder();
+// ---------------------------
+// Decoder implementation
+// ---------------------------
 
-    /**
-     * @brief Destructor. Cleans up all FFmpeg resources.
-     */
-    ~Decoder();
+Decoder::Decoder() = default;
 
-    // Non-copyable, non-movable (RAII with raw FFmpeg pointers).
-    Decoder(const Decoder&) = delete;
-    Decoder& operator=(const Decoder&) = delete;
-    Decoder(Decoder&&) = delete;
-    Decoder& operator=(Decoder&&) = delete;
+Decoder::~Decoder() {
+    Close();
+}
 
-    /**
-     * @brief Open a media file and prepare streams for decoding.
-     * @param filepath Path to the media file.
-     * @return true on success, false on failure.
-     */
-    bool Open(const std::string& filepath);
+bool Decoder::Open(const std::string& filepath) {
+    // Minimal stub implementation: open is not implemented in this lightweight build.
+    // A full implementation should use FFmpeg APIs (avformat_open_input, avcodec_open2, etc.).
+    std::cerr << "Decoder::Open called for '" << filepath << "' - not implemented in this build." << std::endl;
+    return false;
+}
 
-    /**
-     * @brief Close the current media file and free all resources.
-     */
-    void Close();
+void Decoder::Close() {
+    Stop();
 
-    /**
-     * @brief Start the decoding threads.
-     */
-    void Start();
+    if (videoCodecCtx_) {
+        avcodec_free_context(&videoCodecCtx_);
+        videoCodecCtx_ = nullptr;
+    }
+    if (audioCodecCtx_) {
+        avcodec_free_context(&audioCodecCtx_);
+        audioCodecCtx_ = nullptr;
+    }
+    if (fmtCtx_) {
+        avformat_close_input(&fmtCtx_);
+        fmtCtx_ = nullptr;
+    }
 
-    /**
-     * @brief Stop all decoding threads gracefully.
-     */
-    void Stop();
+    // Free any remaining packets in packet queues
+    {
+        std::lock_guard<std::mutex> lock(videoPacketMutex_);
+        while (!videoPacketQueue_.empty()) {
+            AVPacket* pkt = videoPacketQueue_.front();
+            av_packet_free(&pkt);
+            videoPacketQueue_.pop();
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(audioPacketMutex_);
+        while (!audioPacketQueue_.empty()) {
+            AVPacket* pkt = audioPacketQueue_.front();
+            av_packet_free(&pkt);
+            audioPacketQueue_.pop();
+        }
+    }
 
-    /**
-     * @brief Seek to a specific timestamp in the media.
-     * @param targetTime Target time in seconds.
-     * @return true on success, false on failure.
-     */
-    bool Seek(double targetTime);
+    videoQueue_.Clear();
+    audioQueue_.Clear();
+}
 
-    /**
-     * @brief Get the video frame queue for consumption.
-     */
-    FrameQueue<VideoFrame>& GetVideoQueue() { return videoQueue_; }
+void Decoder::Start() {
+    if (running_.load()) {
+        return;
+    }
 
-    /**
-     * @brief Get the audio frame queue for consumption.
-     */
-    FrameQueue<AudioFrame>& GetAudioQueue() { return audioQueue_; }
+    running_.store(true);
+    packetQueuesShutdown_.store(false);
 
-    /**
-     * @brief Get total media duration in seconds.
-     */
-    double GetDuration() const { return duration_; }
+    // In the real implementation these threads would be started to demux and decode.
+    // For now we create no threads in this stub.
+}
 
-    /**
-     * @brief Check if the media has a video stream.
-     */
-    bool HasVideo() const { return videoStreamIndex_ >= 0; }
+void Decoder::Stop() {
+    if (!running_.load()) {
+        // Ensure queues are signaled to unblock any waiters.
+        packetQueuesShutdown_.store(true);
+        videoQueue_.Shutdown();
+        audioQueue_.Shutdown();
+        return;
+    }
 
-    /**
-     * @brief Check if the media has an audio stream.
-     */
-    bool HasAudio() const { return audioStreamIndex_ >= 0; }
+    running_.store(false);
+    packetQueuesShutdown_.store(true);
 
-    /**
-     * @brief Get the original video width.
-     */
-    int GetVideoWidth() const { return videoWidth_; }
+    // Join threads if they were running.
+    if (demuxThread_.joinable()) demuxThread_.join();
+    if (videoDecodeThread_.joinable()) videoDecodeThread_.join();
+    if (audioDecodeThread_.joinable()) audioDecodeThread_.join();
 
-    /**
-     * @brief Get the original video height.
-     */
-    int GetVideoHeight() const { return videoHeight_; }
+    // Clear packet queues
+    {
+        std::lock_guard<std::mutex> lock(videoPacketMutex_);
+        while (!videoPacketQueue_.empty()) {
+            AVPacket* pkt = videoPacketQueue_.front();
+            av_packet_free(&pkt);
+            videoPacketQueue_.pop();
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(audioPacketMutex_);
+        while (!audioPacketQueue_.empty()) {
+            AVPacket* pkt = audioPacketQueue_.front();
+            av_packet_free(&pkt);
+            audioPacketQueue_.pop();
+        }
+    }
 
-    /**
-     * @brief Get the audio sample rate.
-     */
-    int GetAudioSampleRate() const { return audioSampleRate_; }
+    videoQueue_.Shutdown();
+    audioQueue_.Shutdown();
+}
 
-    /**
-     * @brief Get the number of audio channels.
-     */
-    int GetAudioChannels() const { return audioChannels_; }
+bool Decoder::Seek(double /*targetTime*/) {
+    // Not implemented in stub.
+    return false;
+}
 
-    /**
-     * @brief Get the audio sample format.
-     */
-    AVSampleFormat GetAudioSampleFormat() const { return audioSampleFormat_; }
+int Decoder::DecodePacket(AVCodecContext* /*codecCtx*/, AVPacket* /*packet*/, int /*streamIndex*/) {
+    // Stub: decoding not implemented here.
+    return 0;
+}
 
-private:
-    /**
-     * @brief Main demuxing thread: reads packets and dispatches to decoders.
-     */
-    void DemuxThread();
+void Decoder::FlushCodec(AVCodecContext* /*codecCtx*/, bool /*isVideo*/) {
+    // Stub: flush logic would go here.
+}
 
-    /**
-     * @brief Video decoding thread: decodes video packets into frames.
-     */
-    void VideoDecodeThread();
+void Decoder::DemuxThread() {
+    // Stub: demuxing loop would go here.
+}
 
-    /**
-     * @brief Audio decoding thread: decodes audio packets into frames.
-     */
-    void AudioDecodeThread();
+void Decoder::VideoDecodeThread() {
+    // Stub: video decode loop would go here.
+}
 
-    /**
-     * @brief Decode a single packet for the given codec context and stream index.
-     * @param codecCtx The codec context.
-     * @param packet The packet to decode.
-     * @param streamIndex The stream index.
-     * @return 0 on success, negative AVERROR on failure.
-     */
-    int DecodePacket(AVCodecContext* codecCtx, AVPacket* packet, int streamIndex);
-
-    /**
-     * @brief Flush remaining frames from a codec after seeking or EOF.
-     * @param codecCtx The codec context to flush.
-     * @param isVideo true if flushing video, false for audio.
-     */
-    void FlushCodec(AVCodecContext* codecCtx, bool isVideo);
-
-    // FFmpeg context (RAII via manual cleanup in dtor).
-    AVFormatContext* fmtCtx_{nullptr};
-    AVCodecContext* videoCodecCtx_{nullptr};
-    AVCodecContext* audioCodecCtx_{nullptr};
-
-    // Stream indices.
-    int videoStreamIndex_{-1};
-    int audioStreamIndex_{-1};
-
-    // Stream metadata.
-    double duration_{0.0};
-    int videoWidth_{0};
-    int videoHeight_{0};
-    int audioSampleRate_{0};
-    int audioChannels_{0};
-    AVSampleFormat audioSampleFormat_{AV_SAMPLE_FMT_NONE};
-
-    // Frame queues.
-    FrameQueue<VideoFrame> videoQueue_;
-    FrameQueue<AudioFrame> audioQueue_;
-
-    // Threading.
-    std::atomic<bool> running_{false};
-    std::thread demuxThread_;
-    std::thread videoDecodeThread_;
-    std::thread audioDecodeThread_;
-
-    // Synchronization.
-    std::mutex seekMutex_;
-    std::atomic<double> seekTarget_{-1.0};  ///< -1.0 means no pending seek.
-    std::atomic<bool> seekRequested_{false};
-
-    // Packet queues for decoder threads.
-    std::queue<AVPacket*> videoPacketQueue_;
-    std::queue<AVPacket*> audioPacketQueue_;
-    std::mutex videoPacketMutex_;
-    std::mutex audioPacketMutex_;
-    std::condition_variable videoPacketCv_;
-    std::condition_variable audioPacketCv_;
-    std::atomic<bool> packetQueuesShutdown_{false};
-};
+void Decoder::AudioDecodeThread() {
+    // Stub: audio decode loop would go here.
+}
 
 } // namespace myplayer
