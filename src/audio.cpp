@@ -10,6 +10,9 @@
 
 extern "C" {
 #include <libavutil/mathematics.h>
+#include <libavutil/channel_layout.h>
+#include <libavutil/error.h>
+#include <libavutil/samplefmt.h>
 }
 
 namespace myplayer {
