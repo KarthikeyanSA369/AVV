@@ -9,36 +9,37 @@ on:
 
 jobs:
   build:
-
     runs-on: windows-latest
 
     steps:
-
       - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Install vcpkg
-        uses: lukka/run-vcpkg@v11
+      - name: Clone vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git
+          .\vcpkg\bootstrap-vcpkg.bat
 
       - name: Install Dependencies
         run: |
-          vcpkg install
+          .\vcpkg\vcpkg.exe install
 
       - name: Configure CMake
-        run: >
-          cmake
-          -B build
-          -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake
+        run: |
+          cmake -B build ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}\vcpkg\scripts\buildsystems\vcpkg.cmake
 
       - name: Build
-        run: cmake --build build --config Release
+        run: |
+          cmake --build build --config Release
 
       - name: Show Build Folder
-        run: dir build /s
+        run: |
+          dir build /s
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4
