@@ -28,10 +28,11 @@ jobs:
           .\vcpkg\vcpkg.exe install
 
       - name: Configure CMake
+        shell: pwsh
         run: |
-          cmake -B build ^
-            -DCMAKE_BUILD_TYPE=Release ^
-            -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}\vcpkg\scripts\buildsystems\vcpkg.cmake
+          cmake -B build `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}\vcpkg\scripts\buildsystems\vcpkg.cmake"
 
       - name: Build
         run: |
